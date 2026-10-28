@@ -1,0 +1,20 @@
+import { spawn } from "node:child_process";
+import { writeFileSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const CHROME="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", PORT=9227;
+const profile=mkdtempSync(join(tmpdir(),"rrdiag-"));
+const chrome=spawn(CHROME,["--headless=new","--no-sandbox","--enable-unsafe-swiftshader","--use-angle=swiftshader",`--remote-debugging-port=${PORT}`,`--user-data-dir=${profile}`,"--no-first-run","http://127.0.0.1:8899/?boot=skip&noaudio=1&autostart=city&level=1&bike=4&skipcount=1&sim=6"],{stdio:"ignore"});
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function target(){for(let i=0;i<60;i++){try{const l=await(await fetch(`http://127.0.0.1:${PORT}/json/list`)).json();const p=l.find(x=>x.type==="page");if(p?.webSocketDebuggerUrl)return p.webSocketDebuggerUrl;}catch{}await sleep(250);}throw Error("no target");}
+const ws=new WebSocket(await target());await new Promise((res,rej)=>{ws.onopen=res;ws.onerror=rej;});
+let id=0;const pending=new Map();ws.onmessage=ev=>{const m=JSON.parse(ev.data);if(m.id&&pending.has(m.id)){const p=pending.get(m.id);pending.delete(m.id);m.error?p.reject(Error(JSON.stringify(m.error))):p.resolve(m.result);}};
+const send=(method,params={})=>new Promise((resolve,reject)=>{const i=++id;pending.set(i,{resolve,reject});ws.send(JSON.stringify({id:i,method,params}));});
+const ev=async expression=>(await send("Runtime.evaluate",{expression,returnByValue:true})).result?.value;
+await send("Page.enable");await send("Runtime.enable");await sleep(3500);
+console.log(await ev(`(()=>{const r=window.__race;return JSON.stringify({horizon:!!r.horizon,ground:r.scene.children.filter(o=>o.material?.map===r.groundTex).length,cars:r.cars.length,car0:r.cars[0]?{s:r.cars[0].s,p:r.player.s,vis:r.cars[0].sprite.visible,scale:r.cars[0].sprite.scale.toArray(),pos:r.cars[0].sprite.position.toArray()}:null})})()`));
+console.log(await ev(`(()=>{const r=window.__race;r.horizon.visible=false;r.render();return 'off'})()`));
+let s=await send("Page.captureScreenshot",{format:"png"});writeFileSync("preview/diag_nohorizon.png",Buffer.from(s.data,"base64"));console.log("shot nohorizon");
+console.log(await ev(`(()=>{const r=window.__race;r.scene.traverse(o=>{if(o.material?.map===r.groundTex)o.visible=false});r.render();return 'off-ground'})()`));
+s=await send("Page.captureScreenshot",{format:"png"});writeFileSync("preview/diag_noground.png",Buffer.from(s.data,"base64"));console.log("shot noground");
+ws.close();chrome.kill();process.exit(0);
